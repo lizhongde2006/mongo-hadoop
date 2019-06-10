@@ -1,0 +1,112 @@
+import org.apache.tools.ant.filters.ReplaceTokens
+
+def downloadFile(url) {
+    def tmpDir = new File(System.properties['java.io.tmpdir'])
+    def file = new File(tmpDir, new File(new URL(url).getPath()).getName())
+    
+    def count = 0;
+    while (!file.exists()) {
+        try {
+            println "Downloading from ${url} to ${file}."
+            download {
+                src url
+                dest file
+                onlyIfNewer true
+            }
+        } catch (Exception e) {
+            println "Extraction failed: " + e.getMessage()
+            file.delete()
+        }
+        if(count++ > 3) {
+            throw new GradleException("Failed to download after 3 attempts: ${url}");
+        }
+    }
+    return file
+}
+
+def extract(destination, target, file) {
+    if (!new File(target).exists()) {
+        new File(destination).mkdirs()
+        println "Extracting ${file} to ${destination}"
+        copy {
+            from(tarTree(file))
+            into destination
+        }
+    }
+}
+
+task installHadoop() << {
+    extract(hadoopBinaries, hadoopHome,
+            downloadFile("http://archive.apache.org/dist/hadoop/common/hadoop-${hadoopVersion}/hadoop-${hadoopVersion}.tar.gz"))
+}
+
+task installHive() << {
+    extract(hadoopBinaries, hiveHome,
+            downloadFile("https://archive.apache.org/dist/hive/hive-${hiveVersion}/apache-hive-${hiveVersion}-bin.tar.gz"))
+}
+
+task installPig() << {
+    extract(hadoopBinaries, pigHome, downloadFile("https://archive.apache.org/dist/pig/pig-${pigVersion}/pig-${pigVersion}.tar.gz"))
+}
+
+task downloadEnronEmails() << {
+    extract(dataHome, dataHome, downloadFile('https://s3.amazonaws.com/mongodb-enron-email/enron_mongo.tar.bz2'))
+}
+
+task downloadShakespeare() << {
+    // Download complete works from Project Gutenberg.
+    downloadFile('http://www.gutenberg.org/cache/epub/100/pg100.txt')
+}
+
+task copyFiles(dependsOn: [installHadoop, installHive, installPig]) << {
+    def hadoopEtc
+    def hadoopLib
+    if (isHadoopV1) {
+        hadoopEtc = "${hadoopHome}/conf"
+        hadoopLib = "${hadoopHome}/lib"
+    } else {
+        hadoopEtc = "${hadoopHome}/etc/hadoop"
+        hadoopLib = "${hadoopHome}/share/hadoop/common"
+    }
+
+    println "Updating mongo jars"
+
+    safeCopy("core/build/libs/mongo-hadoop-core-${project(':core').version}.jar", hadoopLib, "mongo-hadoop-core.jar")
+    safeCopy("streaming/build/libs/mongo-hadoop-streaming-${project(':core').version}.jar", hadoopLib, "mongo-hadoop-streaming.jar")
+    safeCopy("hive/build/libs/mongo-hadoop-hive-${project(':core').version}.jar", hiveHome + '/lib', "mongo-hadoop-hive.jar")
+    safeCopy(findJar(":core", "mongo-java-driver"), hadoopLib, "mongo-java-driver.jar")
+    
+    println "Updating cluster configuration"
+    copy {
+        from 'clusterConfigs'
+        into hadoopEtc
+        exclude 'hive-site.xml'
+        filter ReplaceTokens, tokens: [
+                HADOOP_BINARIES: hadoopBinaries.toString()
+        ]
+    }
+    copy {
+        from 'clusterConfigs'
+        into "hive/build/resources/test"
+        include 'hive-site.xml'
+        filter ReplaceTokens, tokens: [
+                HIVE_HOME: hiveHome.toString()
+        ]
+    }
+}
+
+def findJar(String proj, String filter) {
+    project(proj).configurations.compile.find { it.name.startsWith(filter) }
+}
+
+def safeCopy(fromPath, toPath, newName) {
+    def copied = copy {
+        from fromPath
+        into toPath
+        rename { newName }
+    }.didWork
+
+    if (!copied) {
+        throw new GradleException("Failed to copy a file: " + fromPath, new FileNotFoundException(fromPath))
+    }
+}
