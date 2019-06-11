@@ -1,4 +1,4 @@
-# MongoDB Connector for Hadoop support hadoop 3x and hive3x and other
+# MongoDB Connector for Hadoop support hadoop 3x and hive3x and other for example or test pull
 
 ## Purpose
 
